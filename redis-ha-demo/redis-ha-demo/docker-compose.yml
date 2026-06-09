@@ -1,0 +1,135 @@
+version: '3.8'
+
+services:
+  redis-master:
+    image: redis:7.2
+    container_name: redis-master
+    hostname: redis-master
+    ports:
+      - '6379:6379'
+    command: redis-server /etc/redis/master.conf
+    volumes:
+      - ./redis/master.conf:/etc/redis/master.conf
+    networks:
+      redis-net:
+        ipv4_address: 172.28.0.10
+    restart: unless-stopped
+
+  redis-replica-1:
+    image: redis:7.2
+    container_name: redis-replica-1
+    hostname: redis-replica-1
+    ports:
+      - '6380:6380'
+    command: redis-server /etc/redis/replica.conf --port 6380 --replicaof redis-master 6379
+    volumes:
+      - ./redis/replica.conf:/etc/redis/replica.conf
+    depends_on:
+      - redis-master
+    networks:
+      redis-net:
+        ipv4_address: 172.28.0.11
+    restart: unless-stopped
+
+  redis-replica-2:
+    image: redis:7.2
+    container_name: redis-replica-2
+    hostname: redis-replica-2
+    ports:
+      - '6381:6381'
+    command: redis-server /etc/redis/replica.conf --port 6381 --replicaof redis-master 6379
+    volumes:
+      - ./redis/replica.conf:/etc/redis/replica.conf
+    depends_on:
+      - redis-master
+    networks:
+      redis-net:
+        ipv4_address: 172.28.0.12
+    restart: unless-stopped
+
+  sentinel-1:
+    image: redis:7.2
+    container_name: sentinel-1
+    hostname: sentinel-1
+    ports:
+      - '26379:26379'
+    command: >
+      sh -c "cp /etc/redis/sentinel.conf /tmp/sentinel.conf &&
+             redis-sentinel /tmp/sentinel.conf --port 26379"
+    volumes:
+      - ./redis/sentinel.conf:/etc/redis/sentinel.conf
+    depends_on:
+      - redis-master
+      - redis-replica-1
+      - redis-replica-2
+    networks:
+      redis-net:
+        ipv4_address: 172.28.0.20
+    restart: unless-stopped
+
+  sentinel-2:
+    image: redis:7.2
+    container_name: sentinel-2
+    hostname: sentinel-2
+    ports:
+      - '26380:26380'
+    command: >
+      sh -c "cp /etc/redis/sentinel.conf /tmp/sentinel.conf &&
+             redis-sentinel /tmp/sentinel.conf --port 26380"
+    volumes:
+      - ./redis/sentinel.conf:/etc/redis/sentinel.conf
+    depends_on:
+      - redis-master
+      - redis-replica-1
+      - redis-replica-2
+    networks:
+      redis-net:
+        ipv4_address: 172.28.0.21
+    restart: unless-stopped
+
+  sentinel-3:
+    image: redis:7.2
+    container_name: sentinel-3
+    hostname: sentinel-3
+    ports:
+      - '26381:26381'
+    command: >
+      sh -c "cp /etc/redis/sentinel.conf /tmp/sentinel.conf &&
+             redis-sentinel /tmp/sentinel.conf --port 26381"
+    volumes:
+      - ./redis/sentinel.conf:/etc/redis/sentinel.conf
+    depends_on:
+      - redis-master
+      - redis-replica-1
+      - redis-replica-2
+    networks:
+      redis-net:
+        ipv4_address: 172.28.0.22
+    restart: unless-stopped
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: redis-ha-app
+    ports:
+      - '3000:3000'
+    environment:
+      - NODE_ENV=production
+      - SENTINEL_HOSTS=sentinel-1:26379,sentinel-2:26380,sentinel-3:26381
+      - MASTER_NAME=mymaster
+    depends_on:
+      - sentinel-1
+      - sentinel-2
+      - sentinel-3
+    networks:
+      redis-net:
+        ipv4_address: 172.28.0.30
+    restart: unless-stopped
+
+networks:
+  redis-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16

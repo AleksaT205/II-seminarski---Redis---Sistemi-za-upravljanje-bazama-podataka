@@ -1,0 +1,595 @@
+<!DOCTYPE html>
+<html lang="sr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Redis HA Monitor</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.6.1/socket.io.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #222535;
+    --border: #2d3148;
+    --red: #e74c3c;
+    --green: #2ecc71;
+    --blue: #3498db;
+    --yellow: #f1c40f;
+    --gray: #8892a4;
+    --text: #e8eaf0;
+    --text2: #a0a8b8;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, sans-serif; min-height: 100vh; }
+
+  header {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 14px 24px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+  header .logo { font-size: 22px; font-weight: 700; color: var(--red); }
+  header .subtitle { font-size: 13px; color: var(--text2); }
+  .status-dot {
+    width: 10px; height: 10px; border-radius: 50%;
+    background: var(--green);
+    box-shadow: 0 0 8px var(--green);
+    margin-left: auto;
+    animation: pulse 2s infinite;
+  }
+  .status-dot.offline { background: var(--red); box-shadow: 0 0 8px var(--red); animation: none; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+
+  .main { display: grid; grid-template-columns: 280px 1fr; gap: 0; min-height: calc(100vh - 53px); }
+
+  /* SIDEBAR */
+  .sidebar {
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    overflow-y: auto;
+  }
+  .sidebar-section { }
+  .sidebar-label {
+    font-size: 10px; font-weight: 600; text-transform: uppercase;
+    color: var(--text2); letter-spacing: 1px; margin-bottom: 8px;
+  }
+
+  .node-card {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px;
+    margin-bottom: 6px;
+    transition: border-color 0.2s;
+  }
+  .node-card:hover { border-color: var(--blue); }
+  .node-card.master { border-left: 3px solid var(--red); }
+  .node-card.replica { border-left: 3px solid var(--blue); }
+  .node-card.sentinel { border-left: 3px solid var(--yellow); }
+  .node-card.down { border-left: 3px solid #555; opacity: 0.6; }
+
+  .node-title { font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 6px; }
+  .node-badge {
+    font-size: 10px; padding: 2px 6px; border-radius: 4px;
+    font-weight: 600; text-transform: uppercase;
+  }
+  .badge-master { background: rgba(231,76,60,0.2); color: var(--red); }
+  .badge-replica { background: rgba(52,152,219,0.2); color: var(--blue); }
+  .badge-sentinel { background: rgba(241,196,15,0.2); color: var(--yellow); }
+  .badge-ok { background: rgba(46,204,113,0.2); color: var(--green); }
+  .badge-down { background: rgba(100,100,100,0.2); color: #888; }
+
+  .node-detail { font-size: 11px; color: var(--text2); margin-top: 4px; }
+
+  /* CONTENT */
+  .content { padding: 20px; display: flex; flex-direction: column; gap: 16px; overflow-y: auto; }
+
+  /* METRICS ROW */
+  .metrics-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+  .metric-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px;
+    text-align: center;
+  }
+  .metric-value { font-size: 28px; font-weight: 700; color: var(--text); }
+  .metric-value.good { color: var(--green); }
+  .metric-value.warn { color: var(--yellow); }
+  .metric-value.bad { color: var(--red); }
+  .metric-label { font-size: 11px; color: var(--text2); margin-top: 4px; }
+
+  /* CHART */
+  .charts-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .chart-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px;
+  }
+  .chart-title { font-size: 13px; font-weight: 600; margin-bottom: 12px; color: var(--text2); }
+  .chart-canvas { position: relative; height: 160px; }
+
+  /* ACTIONS */
+  .actions-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  .btn {
+    padding: 8px 16px;
+    border-radius: 6px;
+    border: none;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 600;
+    transition: all 0.15s;
+  }
+  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .btn-primary { background: var(--blue); color: white; }
+  .btn-primary:hover:not(:disabled) { background: #2980b9; }
+  .btn-danger { background: var(--red); color: white; }
+  .btn-danger:hover:not(:disabled) { background: #c0392b; }
+  .btn-success { background: var(--green); color: #0f1117; }
+  .btn-success:hover:not(:disabled) { background: #27ae60; }
+  .btn-warn { background: var(--yellow); color: #0f1117; }
+  .btn-warn:hover:not(:disabled) { background: #d4ac0d; }
+  .btn-ghost { background: var(--surface2); color: var(--text); border: 1px solid var(--border); }
+  .btn-ghost:hover:not(:disabled) { border-color: var(--blue); }
+
+  /* LOG */
+  .log-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px;
+    flex: 1;
+  }
+  .log-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+  .log-title { font-size: 13px; font-weight: 600; color: var(--text2); }
+  .log-body {
+    background: #0a0c14;
+    border-radius: 6px;
+    padding: 12px;
+    height: 200px;
+    overflow-y: auto;
+    font-family: 'Consolas', 'Monaco', monospace;
+    font-size: 12px;
+    line-height: 1.6;
+  }
+  .log-line { padding: 1px 0; }
+  .log-time { color: #555; }
+  .log-info { color: var(--blue); }
+  .log-warn { color: var(--yellow); }
+  .log-error { color: var(--red); }
+  .log-success { color: var(--green); }
+  .log-metric { color: #a0a8b8; }
+
+  /* BENCHMARK RESULTS */
+  .bench-result {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 16px;
+    display: none;
+  }
+  .bench-result.visible { display: block; }
+  .bench-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 8px; }
+  .bench-stat { text-align: center; }
+  .bench-val { font-size: 20px; font-weight: 700; color: var(--green); }
+  .bench-lbl { font-size: 11px; color: var(--text2); }
+
+  /* FAILOVER TOAST */
+  .toast {
+    position: fixed; top: 20px; right: 20px; z-index: 1000;
+    background: var(--surface2);
+    border: 1px solid var(--red);
+    border-left: 4px solid var(--red);
+    border-radius: 8px;
+    padding: 14px 20px;
+    min-width: 280px;
+    transform: translateX(120%);
+    transition: transform 0.3s ease;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+  }
+  .toast.show { transform: translateX(0); }
+  .toast-title { font-weight: 700; color: var(--red); margin-bottom: 4px; }
+  .toast-body { font-size: 13px; color: var(--text2); }
+
+  .section-title {
+    font-size: 11px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 1px; color: var(--text2); margin-bottom: 8px;
+  }
+
+  .refresh-hint { font-size: 11px; color: #555; margin-left: auto; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">Redis Monitor</div>
+  <div class="subtitle">Replikacija i visoka dostupnost · Sentinel Demo</div>
+  <div class="status-dot" id="connDot" title="WebSocket konekcija"></div>
+</header>
+
+<div class="main">
+
+  <!-- SIDEBAR: Topologija -->
+  <aside class="sidebar">
+    <div class="sidebar-section">
+      <div class="sidebar-label">Master</div>
+      <div id="masterNode" class="node-card master">
+        <div class="node-title">
+          <span>🔴 Master</span>
+          <span class="node-badge badge-master">MASTER</span>
+        </div>
+        <div class="node-detail" id="masterAddr">Učitavanje...</div>
+        <div class="node-detail" id="masterSlaves"></div>
+      </div>
+    </div>
+
+    <div class="sidebar-section">
+      <div class="sidebar-label">Replike</div>
+      <div id="replicaNodes"></div>
+    </div>
+
+    <div class="sidebar-section">
+      <div class="sidebar-label">Sentinel procesi</div>
+      <div id="sentinelNodes"></div>
+    </div>
+
+    <div class="sidebar-section" style="margin-top: auto;">
+      <div class="sidebar-label">Quorum status</div>
+      <div class="node-card">
+        <div class="node-detail" id="quorumInfo">Quorum: 2/3 Sentinel-a</div>
+        <div class="node-detail" id="failoverEpoch">Epoch: —</div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- MAIN CONTENT -->
+  <div class="content">
+
+    <!-- METRIKE -->
+    <div>
+      <div class="section-title">Metrike u realnom vremenu</div>
+      <div class="metrics-row">
+        <div class="metric-card">
+          <div class="metric-value good" id="metLag">—</div>
+          <div class="metric-label">Replikaciono kašnjenje (ms)</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-value" id="metKeys">—</div>
+          <div class="metric-label">Ukupno ključeva</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-value" id="metOps">—</div>
+          <div class="metric-label">Ops/sec</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-value" id="metMem">—</div>
+          <div class="metric-label">Memorija (master)</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- GRAFOVI -->
+    <div class="charts-row">
+      <div class="chart-card">
+        <div class="chart-title">Replikaciono kašnjenje (ms) — poslednjih 60 merenja</div>
+        <div class="chart-canvas">
+          <canvas id="lagChart"></canvas>
+        </div>
+      </div>
+      <div class="chart-card">
+        <div class="chart-title">Operacije u sekundi</div>
+        <div class="chart-canvas">
+          <canvas id="opsChart"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <!-- AKCIJE -->
+    <div>
+      <div class="section-title">Akcije</div>
+      <div class="actions-row">
+        <button class="btn btn-primary" onclick="refreshCluster()">🔄 Osveži topologiju</button>
+        <button class="btn btn-success" onclick="writeTestData()">✏️ Upiši test podatke</button>
+        <button class="btn btn-warn" id="benchBtn" onclick="runBenchmark()">⚡ Benchmark (500 ops)</button>
+        <button class="btn btn-ghost" onclick="measureLag()">📏 Izmeri kašnjenje</button>
+        <span class="refresh-hint">Auto-refresh svake 2s</span>
+      </div>
+    </div>
+
+    <!-- BENCHMARK REZULTATI -->
+    <div class="bench-result" id="benchResult">
+      <div class="section-title">Benchmark rezultati</div>
+      <div class="bench-grid">
+        <div class="bench-stat">
+          <div class="bench-val" id="bWriteOps">—</div>
+          <div class="bench-lbl">Write ops/sec</div>
+        </div>
+        <div class="bench-stat">
+          <div class="bench-val" id="bReadOps">—</div>
+          <div class="bench-lbl">Read ops/sec</div>
+        </div>
+        <div class="bench-stat">
+          <div class="bench-val" id="bTotal">—</div>
+          <div class="bench-lbl">Ukupno operacija</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- LOG -->
+    <div class="log-card">
+      <div class="log-header">
+        <div class="log-title">📋 Event log</div>
+        <button class="btn btn-ghost" style="padding:4px 10px;font-size:11px" onclick="clearLog()">Očisti</button>
+      </div>
+      <div class="log-body" id="logBody">
+        <div class="log-line"><span class="log-time">[—]</span> <span class="log-info">Redis HA Monitor pokrenuti. Čekanje konekcije...</span></div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- FAILOVER TOAST -->
+<div class="toast" id="failoverToast">
+  <div class="toast-title">⚠️ FAILOVER DETEKTOVAN</div>
+  <div class="toast-body" id="toastBody">Master čvor promenjen</div>
+</div>
+
+<script>
+
+const socket = io();
+const dot = document.getElementById('connDot');
+
+socket.on('connect', () => {
+  dot.classList.remove('offline');
+  log('WebSocket konekcija uspostavljena', 'success');
+  refreshCluster();
+});
+
+socket.on('disconnect', () => {
+  dot.classList.add('offline');
+  log('WebSocket konekcija prekinuta', 'error');
+});
+
+socket.on('metrics', (m) => {
+  updateMetrics(m);
+  addChartPoint(m);
+});
+
+socket.on('failover', (data) => {
+  log(`FAILOVER! Novi master: ${JSON.stringify(data.newMaster)}`, 'error');
+  showToast(`Novi master detektovan u ${new Date(data.timestamp).toLocaleTimeString()}`);
+  setTimeout(refreshCluster, 2000);
+});
+
+const chartConfig = (label, color) => ({
+  type: 'line',
+  data: {
+    labels: [],
+    datasets: [{
+      label,
+      data: [],
+      borderColor: color,
+      backgroundColor: color + '20',
+      borderWidth: 2,
+      pointRadius: 0,
+      fill: true,
+      tension: 0.4,
+    }]
+  },
+  options: {
+    responsive: true,
+    maintainAspectRatio: false,
+    animation: { duration: 300 },
+    plugins: { legend: { display: false } },
+    scales: {
+      x: { display: false },
+      y: {
+        ticks: { color: '#8892a4', font: { size: 11 } },
+        grid: { color: '#1e2235' },
+        beginAtZero: true,
+      }
+    }
+  }
+});
+
+const lagChart = new Chart(
+  document.getElementById('lagChart'),
+  chartConfig('Lag ms', '#e74c3c')
+);
+const opsChart = new Chart(
+  document.getElementById('opsChart'),
+  chartConfig('Ops/s', '#3498db')
+);
+
+function addChartPoint(m) {
+  const time = new Date(m.timestamp).toLocaleTimeString('sr', {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  [lagChart, opsChart].forEach(chart => {
+    if (chart.data.labels.length > 60) {
+      chart.data.labels.shift();
+      chart.data.datasets[0].data.shift();
+    }
+  });
+  lagChart.data.labels.push(time);
+  lagChart.data.datasets[0].data.push(m.lag_ms < 0 ? null : m.lag_ms);
+  opsChart.data.labels.push(time);
+  opsChart.data.datasets[0].data.push(m.ops_per_sec);
+  lagChart.update();
+  opsChart.update();
+}
+
+function updateMetrics(m) {
+  const lagEl = document.getElementById('metLag');
+  if (m.lag_ms < 0) {
+    lagEl.textContent = 'N/A';
+    lagEl.className = 'metric-value warn';
+  } else {
+    lagEl.textContent = m.lag_ms;
+    lagEl.className = `metric-value ${m.lag_ms < 10 ? 'good' : m.lag_ms < 50 ? 'warn' : 'bad'}`;
+  }
+  document.getElementById('metKeys').textContent = m.total_keys.toLocaleString();
+  document.getElementById('metOps').textContent = m.ops_per_sec.toLocaleString();
+  document.getElementById('metMem').textContent = m.used_memory_human;
+}
+
+async function refreshCluster() {
+  try {
+    const data = await fetch('/api/cluster-status').then(r => r.json());
+    if (!data.ok) { log('Greška pri osvežavanju topologije: ' + data.error, 'error'); return; }
+    renderTopology(data);
+  } catch (e) {
+    log('Nije moguće učitati stanje klastera', 'error');
+  }
+}
+
+function renderTopology(data) {
+  // Master
+  if (data.master) {
+    const m = data.master;
+    const isDown = m.flags && m.flags.includes('o_down');
+    document.getElementById('masterAddr').textContent = `${m.ip || m.addr}:${m.port}`;
+    document.getElementById('masterSlaves').textContent = `Replika: ${m.num_slaves || 0} · Epoch: ${m.config_epoch || '—'}`;
+    document.getElementById('masterNode').className = `node-card ${isDown ? 'down' : 'master'}`;
+  }
+
+  // Replike
+  const repContainer = document.getElementById('replicaNodes');
+  repContainer.innerHTML = '';
+  (data.slaves || []).forEach((s, i) => {
+    const down = s.flags && (s.flags.includes('disconnected') || s.flags.includes('s_down'));
+    const lag = s.last_ok_ping_reply ? `${s.last_ok_ping_reply}ms ping` : '';
+    repContainer.innerHTML += `
+      <div class="node-card ${down ? 'down' : 'replica'}">
+        <div class="node-title">
+          <span>🔵 Replika ${i+1}</span>
+          <span class="node-badge ${down ? 'badge-down' : 'badge-replica'}">${down ? 'DOWN' : 'OK'}</span>
+        </div>
+        <div class="node-detail">${s.ip || s.addr}:${s.port}</div>
+        <div class="node-detail">${lag} · offset: ${s.slave_repl_offset || '—'}</div>
+      </div>`;
+  });
+  if (!data.slaves || data.slaves.length === 0) {
+    repContainer.innerHTML = '<div class="node-detail" style="padding:8px;color:#555">Nema replika</div>';
+  }
+
+  // Sentineli
+  const senContainer = document.getElementById('sentinelNodes');
+  senContainer.innerHTML = '';
+  const thisHostPort = document.location.host;
+  (data.sentinels || []).forEach((s, i) => {
+    const down = s.flags && s.flags.includes('disconnected');
+    senContainer.innerHTML += `
+      <div class="node-card ${down ? 'down' : 'sentinel'}">
+        <div class="node-title">
+          <span>🟡 Sentinel ${i+2}</span>
+          <span class="node-badge ${down ? 'badge-down' : 'badge-ok'}">${down ? 'DOWN' : 'UP'}</span>
+        </div>
+        <div class="node-detail">${s.ip || s.addr}:${s.port}</div>
+      </div>`;
+  });
+  senContainer.insertAdjacentHTML('afterbegin', `
+    <div class="node-card sentinel">
+      <div class="node-title">
+        <span>🟡 Sentinel 1</span>
+        <span class="node-badge badge-ok">UP</span>
+      </div>
+      <div class="node-detail">localhost:26379</div>
+    </div>`);
+
+  if (data.master) {
+    document.getElementById('failoverEpoch').textContent = `Epoch: ${data.master.config_epoch || 0}`;
+  }
+
+  log(`Topologija osvežena · ${(data.slaves||[]).length} replika · ${(data.sentinels||[]).length+1} sentinel-a`, 'info');
+}
+
+async function writeTestData() {
+  try {
+    const r = await fetch('/api/write-test', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ count: 50 })
+    }).then(r => r.json());
+    if (r.ok) log(`Upisano ${r.written} ključeva · Ukupno: ${r.total_keys}`, 'success');
+    else log('Greška pri upisu: ' + r.error, 'error');
+  } catch (e) { log('Greška: ' + e.message, 'error'); }
+}
+
+async function runBenchmark() {
+  const btn = document.getElementById('benchBtn');
+  btn.disabled = true;
+  btn.textContent = '⏳ Benchmark u toku...';
+  log('Pokretanje benchmarka (500 ops, pipeline 100)...', 'warn');
+  try {
+    const r = await fetch('/api/benchmark', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ ops: 500, pipelineSize: 100 })
+    }).then(r => r.json());
+    if (r.ok) {
+      document.getElementById('bWriteOps').textContent = r.write_ops_per_sec?.toLocaleString() || '—';
+      document.getElementById('bReadOps').textContent = r.read_ops_per_sec?.toLocaleString() || '—';
+      document.getElementById('bTotal').textContent = r.ops?.toLocaleString() || '—';
+      document.getElementById('benchResult').classList.add('visible');
+      log(`Benchmark završen · Write: ${r.write_ops_per_sec} ops/s · Read: ${r.read_ops_per_sec} ops/s`, 'success');
+    } else {
+      log('Benchmark greška: ' + r.error, 'error');
+    }
+  } catch (e) { log('Greška: ' + e.message, 'error'); }
+  finally {
+    btn.disabled = false;
+    btn.textContent = '⚡ Benchmark (500 ops)';
+  }
+}
+
+async function measureLag() {
+  log('Merenje replikacionog kašnjenja...', 'info');
+  try {
+    const r = await fetch('/api/replication-lag').then(r => r.json());
+    if (r.ok) {
+      if (r.lag_ms < 0) log(`Kašnjenje: timeout (replika nije propagirala u roku)`, 'warn');
+      else log(`Replikaciono kašnjenje: ${r.lag_ms}ms (status: ${r.status})`, r.lag_ms < 20 ? 'success' : 'warn');
+    } else log('Greška: ' + r.error, 'error');
+  } catch (e) { log('Greška: ' + e.message, 'error'); }
+}
+
+function log(msg, type = 'metric') {
+  const logBody = document.getElementById('logBody');
+  const time = new Date().toLocaleTimeString('sr');
+  const div = document.createElement('div');
+  div.className = 'log-line';
+  div.innerHTML = `<span class="log-time">[${time}]</span> <span class="log-${type}">${msg}</span>`;
+  logBody.appendChild(div);
+  logBody.scrollTop = logBody.scrollHeight;
+  while (logBody.children.length > 200) logBody.removeChild(logBody.firstChild);
+}
+
+function clearLog() {
+  document.getElementById('logBody').innerHTML = '';
+}
+
+function showToast(msg) {
+  const toast = document.getElementById('failoverToast');
+  document.getElementById('toastBody').textContent = msg;
+  toast.classList.add('show');
+  setTimeout(() => toast.classList.remove('show'), 6000);
+}
+
+setInterval(refreshCluster, 10000);
+
+fetch('/api/metrics-history').then(r => r.json()).then(data => {
+  if (data.ok && data.history) {
+    data.history.forEach(m => { updateMetrics(m); addChartPoint(m); });
+  }
+});
+</script>
+</body>
+</html>
